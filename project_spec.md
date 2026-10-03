@@ -385,6 +385,8 @@ This is the source of truth for what comes next. Each ticket is roughly one Code
 
 Empty at project start. Reviewer and Tester findings that are not fixed immediately are recorded here with the ticket number, so nothing is silently dropped and the README's limitations section can be written from this list.
 
+- Validator edge cases (found in Ticket 4): quantity above 2,147,483,647 and order_amount above 9,999,999,999.99 pass validation but would be rejected by PostgreSQL, failing the whole batch. Years like 0001 or 9999 pass the date check. A date with a space instead of T (2026-09-28 10:00:00) is rejected as non-ISO. Not fixed in v1; sample data does not contain these cases.
+
 ## 16. Submission checklist
 
 - GitHub repo is accessible to reviewers and contains source, README, `sql/`, `.env.example`.
