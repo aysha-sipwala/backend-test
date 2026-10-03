@@ -2,7 +2,7 @@
 
 **Owner:** Aysha
 **Context:** Backend Engineering Assessment for HM Square Solutions LLP (Junior Software Developer). Submission deadline: **Sunday 4 October 2026, 1:00 PM IST**.
-**Repository:** `github.com/aysha-sipwala/backend-test` (public). **Local folder:** `D:\backend-test` (Windows, VS Code).
+**Repository:** `github.com/aysha-sipwala/backend-test` (public). **Local folder:** `D:\Projects\backend-test` (Windows, VS Code).
 **Purpose of this document:** This is the single source of truth for every AI agent (Architect, Coder, Reviewer, Tester) working on this project. Work happens in Claude chat: this file is pasted in full at the start of every chat, and the AI reads all of it before writing or reviewing any code. If a task isn't described here, stop and ask rather than assume. (The Teacher persona lives in its own file, `teacher_persona.md`, and is not part of the build loop.)
 
 ---
@@ -319,7 +319,6 @@ All of this lives in one module, `src/db/shards.js`, which exposes:
 Status of the items that were open at the start (updated Saturday 3 October 2026):
 
 - **How PostgreSQL is run locally: RESOLVED.** Native PostgreSQL install on Windows with 3 databases (`orders_shard_0`, `orders_shard_1`, `orders_shard_2`). No Docker unless Ticket 10 is reached. The code must not care: it only reads connection URLs from `SHARD_URLS`.
-- **GCP project ID: RESOLVED**, `silver-osprey-460010-d8` (Google Cloud free trial is active). **GCS bucket name: PENDING**, created in Ticket 0, region `asia-south1`. The code does not need either until Ticket 7.
 - **Project folder and file layout: RESOLVED.** The repo root is the project root, so every path below sits directly inside `backend-test` (no extra `backend` subfolder).
 - **Development machine: RESOLVED.** Windows, VS Code, PowerShell terminal. See Section 17 for what that means for commands.
 - **Use case and shard key: RESOLVED (3 October 2026).** Marketplace seller order analytics, sharded on `seller_id` (Sections 2 and 11).
@@ -349,7 +348,10 @@ sql/
   001_create_orders.sql
 scripts/
   migrate.js           applies the SQL file to every shard
-  generate-orders.js   writes sample-data/orders_10k.csv
+  generate-orders.js   writes sample-data/orders.csv
+  try-insert.js        manual check for insertBatch (inserts test rows twice, then deletes them)
+sample-data/
+  orders.csv           generated 10,000-row test file (committed, deterministic)
 test/
   orderRow.test.js
   shards.test.js
@@ -368,11 +370,11 @@ This is the source of truth for what comes next. Each ticket is roughly one Code
 
 0. **Environment setup (Aysha, manual, no code).** Google Cloud account, project, bucket, gcloud CLI, `gcloud auth application-default login`. PostgreSQL installed with 3 empty databases. GitHub repo created. **Status: partly done.** Done: Google Cloud free-trial account and project `silver-osprey-460010-d8`; project folder with `.gitignore`, `.env` and `.env.example`; GitHub repo `backend-test` created and in use (public); PostgreSQL 18 installed with the 3 databases `orders_shard_0`, `orders_shard_1` and `orders_shard_2`; GCS bucket `aysha-backend-test-2026` created in `asia-south1`. Not done yet: gcloud CLI and ADC login (needed before Ticket 7).
 1. **Skeleton.** `package.json`, `src/config.js`, `src/logger.js`, `src/app.js`, `src/server.js`, and `GET /health` returning `{ "status": "ok" }` for now. `.gitignore`, `.env` and `.env.example` already exist (done in Ticket 0) and must not be modified. `config.js` must require only `PORT`, `LOG_LEVEL` and `BATCH_SIZE` (with defaults) and must not crash if `GCP_PROJECT_ID`, `GCS_BUCKET_NAME` or `SHARD_URLS` are missing, because later tickets add and validate them (Section 6a). **Status: COMPLETE (committed and pushed to GitHub on 3 October 2026).**
-2. **Shard layer + migration.** `db/shards.js` (pools, `getShardIndex`), `sql/001_create_orders.sql` (the `orders` table exactly as in Section 8, including the composite primary key and `idx_orders_seller_date`), `scripts/migrate.js`. `GET /health` now checks every shard. **Status: not started.**
-3. **Sample data generator.** `scripts/generate-orders.js`: 10,000 rows for about 50 sellers of uneven size (a few large, most small, so the hot-seller trade-off shows in the per-shard counts), 4 marketplaces, several SKUs per seller, a mix of statuses including cancelled and returned, about 2% invalid rows of different kinds, and a few duplicate (seller, marketplace, order) rows. **Status: not started.**
-4. **Row validation + tests.** `validation/orderRow.js`, `test/orderRow.test.js`, `test/shards.test.js`. **Status: not started.**
-5. **Batch insert repository.** `ordersRepo.insertBatch(shardIndex, rows, sourceFile)` with transaction, `ON CONFLICT`, one retry. **Status: not started.**
-6. **Upload pipeline.** `routes/upload.js` + `services/ingest.js`: multer disk storage, streaming parse, validate, route, buffer, flush, summary response. GCS call stubbed for this ticket. **Highest-risk ticket. Keep it isolated.** **Status: not started.**
+2. **Shard layer + migration.** `db/shards.js` (pools, `getShardIndex`), `sql/001_create_orders.sql` (the `orders` table exactly as in Section 8, including the composite primary key and `idx_orders_seller_date`), `scripts/migrate.js`. `GET /health` now checks every shard. **Status: COMPLETE (committed and pushed to GitHub on 3 October 2026).** Tested: `npm run migrate` applied the table to all 3 shards, and `/health` reported all 3 up.
+3. **Sample data generator.** `scripts/generate-orders.js`: 10,000 rows for about 50 sellers of uneven size (a few large, most small, so the hot-seller trade-off shows in the per-shard counts), 4 marketplaces, several SKUs per seller, a mix of statuses including cancelled and returned, about 2% invalid rows of different kinds, and a few duplicate (seller, marketplace, order) rows. Output: `sample-data/orders.csv`, fixed random seed and fixed reference date (3 October 2026), so it is identical on every run. Result: 9,775 valid unique rows, 25 duplicates, 200 invalid rows (14 failure kinds), 50 sellers; shard 0 would receive 5,330 rows, shard 1 2,830 and shard 2 1,615. **Status: COMPLETE (committed and pushed to GitHub on 3 October 2026).**
+4. **Row validation + tests.** `validation/orderRow.js`, `test/orderRow.test.js`, `test/shards.test.js`. 60 tests, all passing (`npm test`). **Status: COMPLETE (committed and pushed to GitHub on 4 October 2026).**
+5. **Batch insert repository.** `ordersRepo.insertBatch(shardIndex, rows, sourceFile)` with transaction, `ON CONFLICT`, one retry, plus `scripts/try-insert.js` as a manual check (`npm run try-insert`: first call 3 inserted and 0 duplicates, second call 0 inserted and 3 duplicates). Reviewed (Opus): PASS, with two should-fixes assigned to Ticket 6 below. **Status: COMPLETE (committed and pushed to GitHub on 4 October 2026).**
+6. **Upload pipeline.** `routes/upload.js` + `services/ingest.js`: multer disk storage, streaming parse, validate, route, buffer, flush, summary response. GCS call stubbed for this ticket. **Highest-risk ticket. Keep it isolated.** Carried over from the Ticket 5 review, all three must be handled in this ticket: (1) `insertBatch` gets an optional fourth argument, a logger that already carries the `uploadId`, falling back to the shared logger when omitted, so every `batch_flushed` and `batch_retry` line carries the `uploadId` (this is an approved signature change, `try-insert.js` keeps working unchanged); (2) `insertBatch` checks that `getShardIndex(row.seller_id) === shardIndex` for every row and throws if not, so a buffering bug cannot silently write to the wrong shard; (3) `insertBatch` only throws, so the pipeline must catch the error, log `batch_failed`, and increment `failedBatches`. **Status: not started.**
 7. **GCS upload with ADC.** `services/gcs.js`, wired into the pipeline as step 2. **Status: not started.**
 8. **Read endpoints.** `GET /orders?sellerId=` (single shard), `GET /sellers/:sellerId/summary` (single shard: top products and sales by marketplace), and `GET /orders/:orderId` (single shard with `sellerId`, scatter-gather without). The summary route logs which shard answered. Note for the Coder: `pg` returns `numeric` columns as strings, so convert sums to numbers in the response. **Status: not started.**
 9. **README + final cleanup.** All README sections from Section 12, secrets check of the repo and git history. **Status: not started.**
@@ -383,9 +385,10 @@ This is the source of truth for what comes next. Each ticket is roughly one Code
 
 ## 15. Known issues log
 
-Empty at project start. Reviewer and Tester findings that are not fixed immediately are recorded here with the ticket number, so nothing is silently dropped and the README's limitations section can be written from this list.
+Reviewer and Tester findings that are not fixed immediately are recorded here with the ticket number, so nothing is silently dropped and the README's limitations section can be written from this list.
 
 - Validator edge cases (found in Ticket 4): quantity above 2,147,483,647 and order_amount above 9,999,999,999.99 pass validation but would be rejected by PostgreSQL, failing the whole batch. Years like 0001 or 9999 pass the date check. A date with a space instead of T (2026-09-28 10:00:00) is rejected as non-ISO. Not fixed in v1; sample data does not contain these cases.
+- Batch insert edge cases (found in the Ticket 5 review): if the connection drops after PostgreSQL committed but before the reply arrives, the retry counts the already-committed rows as duplicates, so `inserted` is under-reported (no data is lost). A `BATCH_SIZE` above 6,500 would exceed PostgreSQL's parameter limit and fail every batch; the default is 1,000 and `config.js` does not yet reject larger values. `try-insert.js` prints its results but does not assert them, and it does not test a duplicate inside one batch. Not fixed in v1.
 
 ## 16. Submission checklist
 
@@ -398,7 +401,7 @@ Empty at project start. Reviewer and Tester findings that are not fixed immediat
 
 Claude chat cannot see Aysha's folders, so the workflow differs from an agentic coding tool:
 
-- **Start of every new chat:** paste the full `project_spec.md`, then the persona section from `agent_personas.md` for the job being done, then the ticket number.
+- **Start of every new chat:** paste the full `project_spec.md`, then the persona section from `agent_personas.md` for the job being done, then the ticket number. Always paste the current copy from the project folder: a Coder that works from an outdated pasted spec builds the wrong thing. A Coder that can open the project folder should read both files from disk instead.
 - **One ticket per message.** The Coder replies with complete file contents, each under a header showing its path (for example `src/db/shards.js`), never partial snippets, so every file can be pasted in whole.
 - **Aysha runs it.** After pasting the files into the project, she runs the command the Coder gives and pastes the full terminal output or error back into the same chat.
 - **Reviewer and Tester:** Aysha pastes the files from the ticket into a chat together with the persona prompt. They only report issues. Fixes go back to a Coder message.
