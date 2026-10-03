@@ -2,15 +2,37 @@
 // It does not call listen(), so tests can use the app without opening a port.
 const express = require('express');
 const logger = require('./logger');
+const { allPools } = require('./db/shards');
 
 const app = express();
 
 // Parses JSON request bodies into req.body.
 app.use(express.json());
 
-// Placeholder health check. Ticket 2 replaces it with a real check of every shard.
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+// Runs SELECT 1 on every shard in parallel. 200 if all are up, 503 if any is down.
+app.get('/health', async (req, res) => {
+  const pools = allPools();
+
+  const results = await Promise.all(
+    pools.map(async (pool, shardIndex) => {
+      try {
+        await pool.query('SELECT 1');
+        return 'up';
+      } catch (err) {
+        // Log only the message: never the connection URL or password.
+        logger.warn({ shard: shardIndex, err: err.message }, 'shard_unreachable');
+        return 'down';
+      }
+    })
+  );
+
+  const shards = {};
+  results.forEach((state, shardIndex) => {
+    shards[shardIndex] = state;
+  });
+
+  const allUp = results.every((state) => state === 'up');
+  res.status(allUp ? 200 : 503).json({ status: allUp ? 'ok' : 'degraded', shards });
 });
 
 // Runs only when no route above matched the request.
