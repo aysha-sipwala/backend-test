@@ -3,7 +3,6 @@
 // row: validate, route to a shard, buffer, and batch insert. Returns the summary
 // object from Section 9. Deleting the temp file is the route's job (its finally).
 const fs = require('fs');
-const path = require('path');
 const { pipeline } = require('stream/promises');
 const { parse } = require('csv-parse');
 const config = require('../config');
@@ -40,6 +39,14 @@ function httpError(status, message) {
   // central error handler may send it to the client even for a 5xx status.
   err.expose = true;
   return err;
+}
+
+// The client chooses the filename, so it is untrusted text. Only the safe form
+// below may be logged: letters, digits, dot, dash and underscore stay, anything
+// else (slashes, spaces, quotes, control characters, accents) becomes "_", and
+// it is cut to 100 characters. It is never used in the GCS object name.
+function sanitizeFilename(name) {
+  return String(name).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 100);
 }
 
 // " Order_Amout " -> "order_amount"
@@ -82,18 +89,19 @@ async function ingestOrdersFile(tempPath, originalFilename, uploadId) {
   const startedAt = Date.now();
   // A child logger adds uploadId to every line, so one upload's logs can be filtered.
   const log = logger.child({ uploadId });
-  log.info({ originalFilename }, 'upload_started');
+  log.info({ sanitizedFilename: sanitizeFilename(originalFilename) }, 'upload_started');
 
   // Step 2: store the raw file first. If that fails, nothing is processed: the
   // original file is the source of truth, and without it we cannot reprocess.
-  // basename() drops any folder part a client might put in the filename.
-  const destination = `uploads/${uploadId}-${path.basename(originalFilename)}`;
+  // The object name is built only from the uploadId we generated, never from the
+  // client's filename, so a client cannot choose or influence where it is stored.
+  const destination = `uploads/${uploadId}-orders.csv`;
   let gcsPath;
   try {
-    gcsPath = await uploadFileToGcs(tempPath, destination);
-    log.info({ gcsPath }, 'gcs_upload_ok');
-  } catch (err) {
-    log.error({ destination, reason: err.message }, 'gcs_upload_failed');
+    // uploadFileToGcs logs gcs_upload_ok / gcs_upload_failed itself (through
+    // `log`, so they carry the uploadId), with a safe reason and no raw error.
+    gcsPath = await uploadFileToGcs(tempPath, destination, log);
+  } catch {
     throw httpError(502, 'Could not store the file in Cloud Storage. Nothing was processed.');
   }
 
