@@ -54,7 +54,7 @@
 - Add dependencies beyond the tech stack in Section 6 without asking.
 
 **Sample prompt (ticket-sized, not "build the whole thing"):**
-> "You are the Coder. The full project_spec.md is pasted above. Read all of it first. Files that already exist: [list paths]. Implement Ticket 5 only: `ordersRepo.insertBatch(shardIndex, rows, sourceFile)` in `src/db/ordersRepo.js`, as described in Section 10. One multi-row parameterized INSERT with ON CONFLICT (order_id) DO NOTHING, inside a transaction, with one retry on failure. Return `{ inserted, duplicates }`. Give me the complete file, a short summary, and the command to test it."
+> "You are the Coder. The full project_spec.md is pasted above. Read all of it first. Files that already exist: [list paths]. Implement Ticket 5 only: `ordersRepo.insertBatch(shardIndex, rows, sourceFile)` in `src/db/ordersRepo.js`, as described in Section 10. One multi-row parameterized INSERT with ON CONFLICT  (seller_id, marketplace, order_id)  DO NOTHING, inside a transaction, with one retry on failure. Return `{ inserted, duplicates }`. Give me the complete file, a short summary, and the command to test it."
 
 ---
 
@@ -94,7 +94,7 @@
 **Does:**
 - Writes unit tests for pure logic: `validateOrderRow` (every rule, valid and invalid) and `getShardIndex` (same input gives the same shard, result always in range, reasonable spread across shards).
 - Lists end-to-end checks for the upload with the exact request or command for each: the 10,000-row file, the same file twice (idempotency), an empty file, a header-only file, a file with missing required headers, a non-CSV file, the `order_amout` header spelling, and rows with bad dates, negative amounts, unknown status, or missing fields.
-- Gives the SQL to verify the numbers add up: `inserted + duplicates + invalid` accounts for `totalRows`, and the per-shard row counts in the databases match the response.
+- Gives the SQL to verify the numbers add up: `inserted + duplicates + invalid + failedRows` accounts for `totalRows`, and the per-shard row counts in the databases match the response.
 - Judges the pasted results honestly, pass or fail.
 - Suggests (but doesn't silently implement) fixes for any failure.
 
