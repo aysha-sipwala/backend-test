@@ -1,8 +1,10 @@
 // Builds the Express app: middleware, routes, 404 and error handling.
 // It does not call listen(), so tests can use the app without opening a port.
 const express = require('express');
+const multer = require('multer');
 const logger = require('./logger');
 const { allPools } = require('./db/shards');
+const uploadRouter = require('./routes/upload');
 
 const app = express();
 
@@ -35,6 +37,9 @@ app.get('/health', async (req, res) => {
   res.status(allUp ? 200 : 503).json({ status: allUp ? 'ok' : 'degraded', shards });
 });
 
+// POST /upload-orders
+app.use(uploadRouter);
+
 // Runs only when no route above matched the request.
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
@@ -44,6 +49,20 @@ app.use((req, res) => {
 // error handler, so all 4 must stay even though next is unused.
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
+  // multer errors carry a code instead of an HTTP status: too large is 413,
+  // everything else (wrong field name, too many files) is the client's mistake.
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      err.status = 413;
+      err.message = 'File too large: the limit is 20 MB';
+    } else if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+      err.status = 400;
+      err.message = `Unexpected form field "${err.field}": send the CSV in the field "file"`;
+    } else {
+      err.status = 400;
+    }
+  }
+
   // Errors can carry their own HTTP status (for example 400 for bad JSON).
   // Anything without one is an unexpected bug, so it becomes 500.
   const status = err.status || err.statusCode || 500;

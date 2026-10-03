@@ -1,7 +1,7 @@
 // Orders repository. For now it has one job: write a batch of already-validated
 // orders into one shard (Section 10, "Batch flush"). The caller decides which
 // shard (via getShardIndex) and how big the batch is.
-const { getPool } = require('./shards');
+const { getPool, getShardIndex } = require('./shards');
 const logger = require('../logger');
 
 // Column order of the INSERT. Must match the order the values are pushed below.
@@ -98,10 +98,14 @@ function describeError(err) {
   return err && err.message ? err.message : 'unknown error';
 }
 
-// insertBatch(shardIndex, rows, sourceFile) -> { inserted, duplicates }
+// insertBatch(shardIndex, rows, sourceFile, batchLogger?) -> { inserted, duplicates }
 // rows: cleaned orders (the `order` from validateOrderRow). The caller owns the
 // batch size (BATCH_SIZE); this function never splits a batch.
-async function insertBatch(shardIndex, rows, sourceFile) {
+// batchLogger: optional. The upload pipeline passes its child logger so the
+// batch_retry and batch_flushed lines carry the uploadId. Scripts can omit it.
+async function insertBatch(shardIndex, rows, sourceFile, batchLogger) {
+  const log = batchLogger || logger;
+
   if (!Array.isArray(rows)) {
     throw new TypeError('insertBatch: rows must be an array');
   }
@@ -113,6 +117,18 @@ async function insertBatch(shardIndex, rows, sourceFile) {
       `Batch of ${rows.length} rows needs ${rows.length * COLUMNS.length} parameters, ` +
         `over the limit of ${MAX_PARAMETERS} (PostgreSQL allows 65535). Send smaller batches.`
     );
+  }
+
+  // Safety net: every row must belong to this shard. A buffering bug upstream
+  // would otherwise write a seller's orders to the wrong database without any
+  // error. The message holds shard numbers only, never row data.
+  for (const row of rows) {
+    const rowShard = getShardIndex(row.seller_id);
+    if (rowShard !== shardIndex) {
+      throw new Error(
+        `Shard routing mismatch: batch for shard ${shardIndex} contains a row that belongs to shard ${rowShard}`
+      );
+    }
   }
 
   const pool = getPool(shardIndex); // always the shard the caller routed to
@@ -130,7 +146,7 @@ async function insertBatch(shardIndex, rows, sourceFile) {
             `after ${MAX_ATTEMPTS} attempts: ${describeError(err)}`
         );
       }
-      logger.warn(
+      log.warn(
         { shard: shardIndex, attempt, rows: rows.length, reason: describeError(err) },
         'batch_retry'
       );
@@ -139,7 +155,7 @@ async function insertBatch(shardIndex, rows, sourceFile) {
   }
 
   const duplicates = rows.length - inserted;
-  logger.info({ shard: shardIndex, rows: rows.length, inserted, duplicates }, 'batch_flushed');
+  log.info({ shard: shardIndex, rows: rows.length, inserted, duplicates }, 'batch_flushed');
   return { inserted, duplicates };
 }
 

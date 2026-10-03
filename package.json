@@ -16,8 +16,10 @@
     "node": ">=20"
   },
   "dependencies": {
+    "csv-parse": "^7.0.3",
     "dotenv": "^18.0.5",
     "express": "^5.2.1",
+    "multer": "^2.4.0",
     "pg": "^8.23.1",
     "pino": "^10.4.0"
   }

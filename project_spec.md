@@ -389,6 +389,7 @@ Reviewer and Tester findings that are not fixed immediately are recorded here wi
 
 - Validator edge cases (found in Ticket 4): quantity above 2,147,483,647 and order_amount above 9,999,999,999.99 pass validation but would be rejected by PostgreSQL, failing the whole batch. Years like 0001 or 9999 pass the date check. A date with a space instead of T (2026-09-28 10:00:00) is rejected as non-ISO. Not fixed in v1; sample data does not contain these cases.
 - Batch insert edge cases (found in the Ticket 5 review): if the connection drops after PostgreSQL committed but before the reply arrives, the retry counts the already-committed rows as duplicates, so `inserted` is under-reported (no data is lost). A `BATCH_SIZE` above 6,500 would exceed PostgreSQL's parameter limit and fail every batch; the default is 1,000 and `config.js` does not yet reject larger values. `try-insert.js` prints its results but does not assert them, and it does not test a duplicate inside one batch. Not fixed in v1.
+- Upload parsing limits (found in Ticket 6): a broken quote can swallow the lines that follow it, and those lines are counted as one malformed row. A quoted field that spans several lines reports its last line number. A file with missing headers is stored in GCS before it is rejected with 400, because the spec stores the file first; no rows are inserted.
 
 ## 16. Submission checklist
 
