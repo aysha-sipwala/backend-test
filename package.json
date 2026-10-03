@@ -1,0 +1,20 @@
+{
+  "name": "orders-ingest-service",
+  "version": "1.0.0",
+  "description": "Streams an orders CSV into GCS and a sharded PostgreSQL setup with batch inserts.",
+  "private": true,
+  "type": "commonjs",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.5",
+    "express": "^5.2.1",
+    "pino": "^10.4.0"
+  }
+}
