@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node src/server.js",
     "migrate": "node scripts/migrate.js",
+    "generate": "node scripts/generate-orders.js",
     "test": "node --test"
   },
   "engines": {
