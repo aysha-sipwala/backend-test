@@ -4,9 +4,14 @@ const express = require('express');
 const multer = require('multer');
 const logger = require('./logger');
 const { allPools } = require('./db/shards');
-const uploadRouter = require('./routes/upload');
+const { uploadRouter, assignUploadId } = require('./routes/upload');
 
 const app = express();
+
+// Gives every upload request its uploadId and a logger that carries it. It must
+// come first, so even an error raised while the request body is being read (a
+// multer limit, a broken JSON body) is logged with the uploadId.
+app.post('/upload-orders', assignUploadId);
 
 // Parses JSON request bodies into req.body.
 app.use(express.json());
@@ -51,6 +56,7 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   // multer errors carry a code instead of an HTTP status: too large is 413,
   // everything else (wrong field name, too many files) is the client's mistake.
+  // Each limit gets a short fixed message instead of multer's own wording.
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
       err.status = 413;
@@ -58,6 +64,15 @@ app.use((err, req, res, next) => {
     } else if (err.code === 'LIMIT_UNEXPECTED_FILE') {
       err.status = 400;
       err.message = `Unexpected form field "${err.field}": send the CSV in the field "file"`;
+    } else if (err.code === 'LIMIT_FILE_COUNT') {
+      err.status = 400;
+      err.message = 'Too many files: send exactly one .csv file';
+    } else if (err.code === 'LIMIT_FIELD_COUNT') {
+      err.status = 400;
+      err.message = 'Too many form fields in the request';
+    } else if (err.code === 'LIMIT_PART_COUNT') {
+      err.status = 400;
+      err.message = 'Too many parts in the request';
     } else {
       err.status = 400;
     }
@@ -67,14 +82,28 @@ app.use((err, req, res, next) => {
   // Anything without one is an unexpected bug, so it becomes 500.
   const status = err.status || err.statusCode || 500;
 
+  // Upload requests have req.log, a logger that stamps the uploadId on every
+  // line. Other routes use the shared logger.
+  const log = req.log || logger;
+
+  // The text we send to the client. For a 5xx it is hidden unless the error is
+  // marked `expose` (our own fixed messages, such as the 502 for a GCS failure).
+  let message;
   if (status >= 500) {
-    logger.error({ err, method: req.method, path: req.path }, 'request_failed');
-    // Hide internal details from the client on server errors.
-    res.status(status).json({ error: 'Internal server error' });
+    log.error({ err, method: req.method, path: req.path }, 'request_failed');
+    message = err.expose === true ? err.message : 'Internal server error';
   } else {
-    logger.warn({ err, method: req.method, path: req.path, status }, 'request_rejected');
-    res.status(status).json({ error: err.message });
+    log.warn({ err, method: req.method, path: req.path, status }, 'request_rejected');
+    message = err.message;
   }
+
+  // One summary line for every failed upload, with no stack, no paths and no
+  // data: just the status and the same text the client receives.
+  if (req.uploadId) {
+    log[status >= 500 ? 'error' : 'warn']({ status, reason: message }, 'upload_failed');
+  }
+
+  res.status(status).json({ error: message });
 });
 
 module.exports = app;

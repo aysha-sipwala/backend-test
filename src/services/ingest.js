@@ -36,6 +36,9 @@ const MALFORMED_ROW = 'malformed row';
 function httpError(status, message) {
   const err = new Error(message);
   err.status = status;
+  // The message is fixed text we wrote (no paths, no credentials), so the
+  // central error handler may send it to the client even for a 5xx status.
+  err.expose = true;
   return err;
 }
 
@@ -94,8 +97,16 @@ async function ingestOrdersFile(tempPath, originalFilename, uploadId) {
     throw httpError(502, 'Could not store the file in Cloud Storage. Nothing was processed.');
   }
 
-  // Running totals for the summary.
-  const totals = { totalRows: 0, inserted: 0, duplicates: 0, invalid: 0, failedBatches: 0 };
+  // Running totals for the summary. Every row ends up in exactly one of
+  // inserted, duplicates, invalid or failedRows, so those four add up to totalRows.
+  const totals = {
+    totalRows: 0,
+    inserted: 0,
+    duplicates: 0,
+    invalid: 0,
+    failedBatches: 0,
+    failedRows: 0, // rows that were in a batch which failed even after the retry
+  };
   const sampleErrors = [];
   // One buffer per shard, and perShard keyed "0", "1", "2" so shards with 0 rows still show.
   const buffers = [];
@@ -128,6 +139,9 @@ async function ingestOrdersFile(tempPath, originalFilename, uploadId) {
       perShard[String(shardIndex)] += result.inserted;
     } catch (err) {
       totals.failedBatches++;
+      // These rows were valid but never reached the database. Counting them keeps
+      // inserted + duplicates + invalid + failedRows equal to totalRows.
+      totals.failedRows += rows.length;
       // insertBatch builds its error messages without row data or connection strings.
       log.error({ shard: shardIndex, rows: rows.length, reason: err.message }, 'batch_failed');
     }
@@ -242,6 +256,7 @@ async function ingestOrdersFile(tempPath, originalFilename, uploadId) {
     duplicates: totals.duplicates,
     invalid: totals.invalid,
     failedBatches: totals.failedBatches,
+    failedRows: totals.failedRows,
     perShard,
     durationMs: Date.now() - startedAt,
     sampleErrors,
