@@ -2,18 +2,35 @@
 
 **Owner:** Aysha
 **Context:** Backend Engineering Assessment for HM Square Solutions LLP (Junior Software Developer). Submission deadline: **Sunday 4 October 2026, 1:00 PM IST**.
-**Repository:** `github.com/aysha-sipwala/backend-test` (public, empty until the first push). **Local folder:** `D:\backend-test` (Windows, VS Code).
+**Repository:** `github.com/aysha-sipwala/backend-test` (public). **Local folder:** `D:\backend-test` (Windows, VS Code).
 **Purpose of this document:** This is the single source of truth for every AI agent (Architect, Coder, Reviewer, Tester) working on this project. Work happens in Claude chat: this file is pasted in full at the start of every chat, and the AI reads all of it before writing or reviewing any code. If a task isn't described here, stop and ask rather than assume. (The Teacher persona lives in its own file, `teacher_persona.md`, and is not part of the build loop.)
 
 ---
 
 ## 1. One-line pitch
 
-A Node.js API that accepts an orders CSV (~10,000 rows), stores the original file in Google Cloud Storage, validates every row while streaming, and batch-inserts the valid rows into a PostgreSQL setup that is sharded at the application level.
+A Node.js and Express.js API for marketplace seller order analytics. It accepts an orders CSV (~10,000 rows), stores the original file in Google Cloud Storage, validates every row while streaming, and batch-inserts the valid rows into a PostgreSQL setup that is sharded at the application level by `seller_id`, so each seller's data lives together.
 
-## 2. Problem this solves
+## 2. Use case and problem this solves
 
-A business receives large order files. Loading the whole file into memory, inserting one row at a time, and keeping everything in a single database all break as volume grows. This service shows the scalable version of each step: stream the file, insert in batches, and spread the data across several databases with a clear routing rule.
+**Use case (chosen by Aysha, 3 October 2026): marketplace seller order analytics.** Shop owners sell products on marketplaces such as Amazon, Flipkart, Meesho and Myntra. Each marketplace gives them an orders report. A company that manages or analyses seller accounts (the kind of problem a business like HM Square deals with) collects these reports and wants to show each shop owner which products sell most, which marketplace brings the most sales, and how orders change over time. This use case is a design choice inspired by public information about that kind of business. It does not claim any knowledge of a company's internal systems.
+
+**Who uses it:** the shop owners (sellers) are the clients the system exists for. The company staff who upload their reports are the ones calling the API. There is no login or screen in this assessment: whoever calls `POST /upload-orders` plays the company staff.
+
+**Words used in this project (never mix them up):**
+- **Seller:** the shop owner, our client, for example Ramesh who sells kurtis on Meesho and Amazon. `seller_id` is a short code for that shop owner (for example `S0112`). It says whose shop an order belongs to. It says nothing about the product.
+- **Customer:** the shopper who bought the item. `customer_id` is a code for that buyer.
+- **Product:** the item sold, identified by `sku` (for example `KURTI-BLU-M`).
+- **Marketplace:** where the order was placed: amazon, flipkart, meesho or myntra.
+
+**The questions the system answers (every one is about a single seller):**
+1. Which of my products sell the most?
+2. Which marketplace brings me the most sales?
+3. How are my orders and revenue changing over time?
+
+**Why sharding:** with many sellers and thousands of orders each, one database eventually gets slow, so the data is split across several databases (shards). The shard key is the column that decides which shard a row goes to, and it must follow the questions above. All of them are about one seller, so the shard key is `seller_id`: all of one seller's orders sit in one shard, and each question above is answered by one query on one shard. Section 11 has the full reasoning and the trade-offs.
+
+**Honest note:** 10,000 rows fit easily in one database, so sharding is not needed at this volume. The project demonstrates a design that scales, and the README must say so openly.
 
 The assessment evaluates five things (Section 10 of the assessment PDF): Node.js async and streams, PostgreSQL schema and batch inserts, sharding, GCP usage with ADC, and code quality. Every decision below is made to score on those five, and nothing else.
 
@@ -35,19 +52,20 @@ These apply to every ticket, every agent, every session:
 2. The uploaded file is stored in a GCS bucket using ADC.
 3. Streaming CSV parsing, row by row.
 4. Row validation. Invalid rows are skipped, logged, and counted. A sample of them is returned in the response.
-5. Application-level sharding across 3 PostgreSQL databases, shard key `customer_id`.
+5. Application-level sharding across 3 PostgreSQL databases, shard key `seller_id`.
 6. Batch inserts (1,000 rows per batch) inside transactions.
 7. Idempotent inserts: uploading the same file twice does not create duplicates.
 8. A JSON summary response: total rows, inserted, duplicates, invalid, failed batches, per-shard counts, duration.
-9. Bonus endpoint `GET /orders/:orderId`.
-10. Bonus endpoint `GET /orders?customerId=`.
-11. Bonus endpoint `GET /health`: checks every shard is reachable.
-12. Structured logging: upload start/end, GCS result, batch flushes, failed records, errors.
-13. SQL migration script and a migration runner that applies it to every shard.
-14. A sample-data generator script that produces a 10,000-row CSV including some deliberately invalid and duplicate rows (needed for the demo video).
-15. Unit tests for the two pieces of pure logic: row validation and shard routing.
-16. `README.md` (setup, ADC configuration, sharding explanation, design decisions and trade-offs) and `.env.example`.
-17. **Optional, only if everything above is done and working:** Docker Compose setup for the app and the 3 databases.
+9. Bonus endpoint `GET /orders?sellerId=`: one seller's orders (single shard).
+10. Bonus endpoint `GET /orders/:orderId`: one order, optionally narrowed by `sellerId`.
+11. Seller summary endpoint `GET /sellers/:sellerId/summary`: top products and sales by marketplace for one seller (single shard). This is the endpoint that shows why the shard key was chosen.
+12. Bonus endpoint `GET /health`: checks every shard is reachable.
+13. Structured logging: upload start/end, GCS result, batch flushes, failed records, errors.
+14. SQL migration script and a migration runner that applies it to every shard.
+15. A sample-data generator script that produces a 10,000-row CSV (about 50 sellers of uneven size, 4 marketplaces, deliberately invalid and duplicate rows), needed for the demo video.
+16. Unit tests for the two pieces of pure logic: row validation and shard routing.
+17. `README.md` (setup, ADC configuration, the use case, sharding explanation, design decisions and trade-offs) and `.env.example`.
+18. **Optional, only if everything above is done and working:** Docker Compose setup for the app and the 3 databases.
 
 ## 5. Explicitly out of scope for v1
 
@@ -58,15 +76,16 @@ These apply to every ticket, every agent, every session:
 - Cloud deployment (Cloud Run, etc.). The app runs locally and talks to the real GCS bucket.
 - Consistent hashing, resharding, or shard rebalancing tools.
 - Cross-shard transactions (two-phase commit).
-- TypeScript, ORMs (Prisma, Sequelize, Knex). Plain JavaScript and the `pg` driver only, so the SQL is visible and explainable.
+- TypeScript, ORMs (Prisma, Sequelize, Knex). JavaScript with the `pg` driver only, so the SQL is visible and explainable.
+- Real marketplace API integrations, or each marketplace's own report format. The input is one simplified CSV format (Section 8).
 
 ## 6. Tech stack
 
 | Layer | Choice | Notes |
 |---|---|---|
 | Runtime | Node.js 20+ (LTS) | Required by the assessment |
-| Language | Plain JavaScript (CommonJS) | No TypeScript. Readability and explainability over type safety for a 24-hour task |
-| Web framework | Express | Minimal and widely known |
+| Language | JavaScript (CommonJS) on Node.js | No TypeScript. Readability and explainability over type safety for a 24-hour task |
+| Web framework | Express.js | The standard Node.js web framework, minimal and widely known |
 | File upload | `multer` with **disk storage** | Writes the upload to a temp file as a stream. Never `memoryStorage` |
 | CSV parsing | `csv-parse` (streaming API, async iterator) | `for await (const row of parser)` gives row-by-row reading with automatic backpressure |
 | Database driver | `pg` (node-postgres) | One connection pool per shard |
@@ -97,6 +116,7 @@ All configuration comes from environment variables, loaded from `.env` locally. 
 ## 7. Schema notation key
 
 - **pk**: primary key. The unique ID for each row.
+- **composite primary key**: a primary key made of more than one column. The combination of values must be unique.
 - **text**: a string of any length.
 - **timestamptz**: a timestamp stored with time zone (PostgreSQL normalizes it to UTC).
 - **numeric(12,2)**: an exact decimal with 2 digits after the point. Used for money because floating-point types cause rounding errors.
@@ -109,31 +129,37 @@ All configuration comes from environment variables, loaded from `.env` locally. 
 
 The same schema exists in **every** shard. The migration file is `sql/001_create_orders.sql`.
 
-**`orders`**
-- order_id (text, pk): string or UUID from the file
-- customer_id (text, not null): the shard key
+**`orders`** (one row per order line)
+- order_id (text, not null): the marketplace's own order number. Unique only within one seller and marketplace, so it is not a primary key on its own.
+- seller_id (text, not null): the shop owner this order belongs to. **The shard key.**
+- marketplace (text, not null, check in: `amazon`, `flipkart`, `meesho`, `myntra`)
+- sku (text, not null): the product sold
+- quantity (integer, not null, check `quantity >= 1`)
+- customer_id (text, not null): the buyer. Required by the assessment. Marketplaces generally do not give sellers a stable buyer ID, so it is stored but never used for sharding or analytics.
 - order_date (timestamptz, not null)
-- order_amount (numeric(12,2), not null, check `order_amount >= 0`)
-- status (text, not null, check in: `pending`, `confirmed`, `shipped`, `delivered`, `cancelled`)
+- order_amount (numeric(12,2), not null, check `order_amount >= 0`): the total for this order line in INR, quantity included
+- status (text, not null, check in: `pending`, `confirmed`, `shipped`, `delivered`, `cancelled`, `returned`)
 - source_file (text, not null): the GCS object path the row came from, for traceability
 - created_at (timestamptz, not null, default `now()`)
+- **Primary key: `(seller_id, marketplace, order_id)`**
 
 **Indexes**
-- Primary key on `order_id`: serves `GET /orders/:orderId` and is what makes `ON CONFLICT (order_id) DO NOTHING` possible.
-- `idx_orders_customer_date` on `(customer_id, order_date DESC)`: serves `GET /orders?customerId=` with newest orders first.
+- The primary key `(seller_id, marketplace, order_id)`: makes `ON CONFLICT ... DO NOTHING` possible, and its leading column `seller_id` also serves per-seller lookups. Because `seller_id` is both the shard key and part of the primary key, duplicate detection always happens inside the one shard the row belongs to.
+- `idx_orders_seller_date` on `(seller_id, order_date DESC)`: serves `GET /orders?sellerId=` (newest first) and time-based summaries.
 - No other indexes. Every extra index slows down bulk inserts, and no other query exists in v1.
 
 **CSV input contract**
-- Header row required. Columns: `order_id, customer_id, order_date, order_amount, status`.
+- Header row required. Columns: `order_id, seller_id, marketplace, sku, quantity, customer_id, order_date, order_amount, status`.
 - The assessment PDF spells the amount field `order_amout` (a typo). The parser must accept **both** `order_amount` and `order_amout` as the header for this column.
 - Extra columns are ignored. Header names are trimmed and lowercased before matching.
 
 **Validation rules (a row failing any rule is invalid and skipped)**
-- `order_id`: required, non-empty after trim, max 64 characters.
-- `customer_id`: required, non-empty after trim, max 64 characters.
+- `order_id`, `seller_id`, `sku`, `customer_id`: required, non-empty after trim, max 64 characters.
+- `marketplace`: required, lowercased, one of the four allowed values.
+- `quantity`: required, a whole number, at least 1.
 - `order_date`: required, must parse to a valid date (ISO 8601 expected).
 - `order_amount`: required, must be a number, must be >= 0, at most 2 decimal places.
-- `status`: required, lowercased, must be one of the five allowed values.
+- `status`: required, lowercased, one of the six allowed values.
 
 The validator is a pure function: `validateOrderRow(row) -> { valid: true, order } | { valid: false, reason }`. No database or network access inside it, so it is easy to unit test.
 
@@ -160,8 +186,22 @@ The validator is a pure function: `validateOrderRow(row) -> { valid: true, order
   - `status` is `"completed"` when no batch failed, `"completed_with_errors"` when at least one batch failed after retry. Invalid rows alone do not make it `completed_with_errors`. They are expected input problems and are reported in `invalid`.
   - `sampleErrors` holds at most the first 20 invalid rows. All invalid rows are logged.
   - Errors: `400` no file, wrong field name, or not a `.csv`. `413` file too large. `502` GCS upload failed (nothing is processed). `500` unexpected error.
-- `GET /orders/:orderId`: returns the order or `404`. See Section 11 for how the shard is found.
-- `GET /orders?customerId=<id>`: returns that customer's orders, newest first, with `limit` (default 50, max 200) and `offset` query params. `400` if `customerId` is missing.
+- `GET /orders?sellerId=<id>`: returns that seller's orders, newest first, with `limit` (default 50, max 200) and `offset` query params. `400` if `sellerId` is missing. One shard is queried.
+- `GET /orders/:orderId`: returns every order row with that `order_id` (the same number can exist for different sellers or marketplaces). Optional `sellerId` query param: if given, only that seller's shard is queried. If omitted, all shards are queried in parallel (scatter-gather). `404` if nothing matches.
+- `GET /sellers/:sellerId/summary`: the analytics endpoint. Routed by `sellerId`, so exactly one shard is queried. Response `200`:
+  ```json
+  {
+    "sellerId": "S0112",
+    "totalOrders": 412,
+    "totalUnits": 590,
+    "totalRevenue": 245310.5,
+    "topProducts": [ { "sku": "KURTI-BLU-M", "units": 85, "revenue": 33915.0 } ],
+    "byMarketplace": [ { "marketplace": "meesho", "orders": 230, "units": 340, "revenue": 118200.0 } ]
+  }
+  ```
+  - Only orders whose status is not `cancelled` or `returned` count toward the figures.
+  - `topProducts` is the top 5 SKUs by units. `byMarketplace` lists every marketplace the seller has sales on, highest revenue first.
+  - `404` if the seller has no orders.
 - `GET /health`: runs `SELECT 1` on every shard. `200` with per-shard status if all are up, `503` if any is down.
 
 ## 10. Processing pipeline and error strategy
@@ -171,7 +211,7 @@ The validator is a pure function: `validateOrderRow(row) -> { valid: true, order
 1. `multer` streams the upload to a temp file on disk (`tmp/uploads/`). Generate an `uploadId` (UUID). Log "upload started".
 2. **Upload the temp file to GCS first**, as `uploads/<uploadId>-<originalFilename>`. If this fails, return `502`, delete the temp file, and stop. Reason for doing GCS first: the raw file is the source of truth. If it is safely stored, any later database problem can be recovered by reprocessing. Processing data whose original file was lost is the worse failure.
 3. Open a read stream on the temp file and pipe it into the `csv-parse` streaming parser.
-4. For each row: validate (Section 8). Invalid: count it, log it, add to `sampleErrors` if fewer than 20. Valid: ask the shard router (Section 11) for the shard index and push the row into that shard's buffer.
+4. For each row: validate (Section 8). Invalid: count it, log it, add to `sampleErrors` if fewer than 20. Valid: ask the shard router (Section 11) for the shard index using the row's `seller_id`, and push the row into that shard's buffer.
 5. When any shard's buffer reaches `BATCH_SIZE` (1,000), **flush** it (below) before reading further rows. Awaiting the flush inside the `for await` loop is what creates backpressure: the file is not read faster than the database can accept it.
 6. At end of file, flush every remaining non-empty buffer.
 7. Delete the temp file (in a `finally` block so it also happens on errors). Log "upload finished" with the summary. Return the summary.
@@ -179,14 +219,14 @@ The validator is a pure function: `validateOrderRow(row) -> { valid: true, order
 **Batch flush (the only way rows are written):**
 
 - One multi-row statement per batch:
-  `INSERT INTO orders (order_id, customer_id, order_date, order_amount, status, source_file) VALUES ($1,$2,...),(...),... ON CONFLICT (order_id) DO NOTHING`
-- 1,000 rows x 6 columns = 6,000 parameters, safely under PostgreSQL's 65,535 parameter limit.
+  `INSERT INTO orders (order_id, seller_id, marketplace, sku, quantity, customer_id, order_date, order_amount, status, source_file) VALUES ($1,$2,...),(...),... ON CONFLICT (seller_id, marketplace, order_id) DO NOTHING`
+- 1,000 rows x 10 columns = 10,000 parameters, safely under PostgreSQL's 65,535 parameter limit.
 - Wrapped in a transaction on a single client from that shard's pool: `BEGIN`, insert, `COMMIT`. On any error: `ROLLBACK`.
 - `inserted` = the statement's `rowCount`. `duplicates` = batch size minus `rowCount`.
 
 **Transaction scope (locked): one transaction per batch, per shard.** Not one giant transaction for the whole file. Reasons: a transaction cannot span separate databases without two-phase commit (out of scope), and short transactions hold locks briefly. The consequence is that a file can be partially loaded if a batch fails. That is acceptable **because inserts are idempotent**: re-uploading the same file inserts only the missing rows.
 
-**Idempotency:** `ON CONFLICT (order_id) DO NOTHING`. A repeated `order_id` is counted as a duplicate, never an error, never a second row.
+**Idempotency:** `ON CONFLICT (seller_id, marketplace, order_id) DO NOTHING`. A repeated combination of seller, marketplace and order number is counted as a duplicate, never an error, never a second row.
 
 **Retry strategy:** if a batch fails, retry it **once** after a short delay (500 ms). If it fails again, log the error with the shard index and batch size, increment `failedBatches`, and continue with the rest of the file. No infinite retries. No crash.
 
@@ -205,15 +245,15 @@ The validator is a pure function: `validateOrderRow(row) -> { valid: true, order
 
 ## 11. The sharding logic, explicitly
 
-This is the heart of the assessment and the part Aysha must be able to explain and redraw on a whiteboard without notes.
+This is the heart of the assessment and the part Aysha must be able to explain and redraw on a whiteboard without notes. The use case in Section 2 decides the key, not the other way round.
 
-**Shard key: `customer_id`. Strategy: hash-based, application-level routing.**
+**Shard key: `seller_id`. Strategy: hash-based, application-level routing.**
 
 ```
-shardIndex = hash(customer_id) % SHARD_COUNT
+shardIndex = hash(seller_id) % SHARD_COUNT
 
-hash(customer_id):
-    take the MD5 of the customer_id string
+hash(seller_id):
+    take the MD5 of the seller_id string
     take the first 8 hex characters
     convert them to an integer
 
@@ -221,36 +261,52 @@ SHARD_COUNT = number of connection URLs in SHARD_URLS (3 by default)
 ```
 
 All of this lives in one module, `src/db/shards.js`, which exposes:
-- `getShardIndex(customerId)`: the pure routing function above.
+- `getShardIndex(sellerId)`: the pure routing function above.
 - `getPool(shardIndex)`: the `pg` pool for that shard.
 - `allPools()`: every pool, for health checks and scatter queries.
 
-**Why `customer_id` and not the alternatives:**
-- All of one customer's orders land in the same shard, so the most natural business query ("show this customer's orders") touches exactly **one** shard.
-- Hashing spreads customers evenly across shards, regardless of what the IDs look like.
-- Versus hash of `order_id`: spreads rows most evenly and makes order lookup single-shard, but a customer's orders would be scattered over every shard.
-- Versus time-based on `order_date`: good for archiving old data, but recent data all lands in one "hot" shard, so load is uneven.
+**Why `seller_id`:**
+- Every question the system answers is about one seller (top products, sales per marketplace, orders over time). With this key, each of those is one query on one shard.
+- A seller's data is kept together and isolated, which is the normal pattern for multi-tenant systems where each client only sees their own data.
+- There are many distinct sellers, and hashing spreads them evenly across the shards.
+- The value never changes after a row is inserted.
+- Because `seller_id` is also part of the primary key, every copy of the same order always lands in the same shard, so duplicate detection is always correct.
+
+**A shard key is good if it passes four tests:** it matches the most common query, it has many distinct values, it spreads data evenly, and it never changes. How the candidates compare for this use case:
+
+| Key | Matches the main query | Many distinct values | Even spread | Verdict |
+|---|---|---|---|---|
+| `seller_id` | Yes | Yes | Mostly (a very large seller is the risk) | **Chosen** |
+| month of `order_date` | No (a seller's dashboard spans months) | No (12 a year) | No (the current month receives all new writes) | Right for archiving and monthly reporting, wrong for this use case |
+| `order_id` | No | Yes | Yes | Spreads well, but every seller query would hit every shard |
+| `customer_id` | No | Yes | Yes | Answers a question nobody asks here: sellers do not query per buyer, and marketplaces do not give sellers a stable buyer ID |
+| `marketplace` | No | No (4 values) | No (one marketplace dominates) | Unusable |
+| `sku` (product) | No | Yes | No (bestsellers skew it) | Wrong: SKUs repeat across sellers, and each seller asks about their own products |
+
+**Why a hash instead of ranges of seller IDs:** a hash spreads sellers evenly and avoids hot spots from sequential IDs. Ranges would make range queries easy, but this system has no such query.
 
 **Why MD5 for the hash:** it is built into Node's `crypto`, deterministic across machines and restarts, and distributes evenly. It is used here for distribution only, not for security.
 
 **How each endpoint finds its shard:**
-- `POST /upload-orders`: each row is routed by its own `customer_id`.
-- `GET /orders?customerId=`: route by `customerId`. One shard queried.
-- `GET /orders/:orderId`: the `customer_id` is not known, so the shard cannot be computed. The service queries **all shards in parallel** (`Promise.all`) and returns the first match. This is called scatter-gather.
+- `POST /upload-orders`: each row is routed by its own `seller_id`.
+- `GET /orders?sellerId=`: route by `sellerId`. One shard queried.
+- `GET /sellers/:sellerId/summary`: route by `sellerId`. One shard queried. This is the payoff of the shard key.
+- `GET /orders/:orderId`: with `sellerId`, one shard. Without it, the shard cannot be computed, so all shards are queried in parallel (`Promise.all`) and the matches are combined. This is called scatter-gather.
 
 **Trade-offs to state honestly in the README and the interview:**
-1. **Order lookup by ID is a scatter query.** Fine for 3 shards, expensive for 100. Fixes at scale: a lookup table mapping `order_id` to shard, or encoding the shard into the order ID.
-2. **Uneven customers.** One customer with a huge number of orders makes their shard bigger than the others ("hot shard").
+1. **A very large seller makes a hot shard.** The sample data deliberately includes a few large sellers so this is visible in the per-shard counts. Fixes at scale: shard large sellers by `seller_id` plus month, or give them a dedicated shard through a lookup table.
+2. **Reports across all sellers must query every shard and merge the results.** They are rarer than per-seller dashboards. At larger scale they would feed a separate analytics store such as BigQuery.
 3. **Changing the shard count is hard.** With `hash % N`, changing N moves most rows to a different shard. Production systems use consistent hashing or a fixed number of virtual shards mapped onto physical servers. Out of scope here.
-4. **Uniqueness of `order_id` is per shard, not global.** The same `order_id` arriving with two different `customer_id` values could exist in two shards. Accepted for v1, noted as a limitation.
+4. **Order lookup without a seller is a scatter query.** Fine for 3 shards, expensive for 100.
 5. **No cross-shard transactions.** Covered by per-batch transactions plus idempotent inserts (Section 10).
+6. **Sharding is not needed at 10,000 rows.** This is a demonstration of a design that scales.
 
 ## 12. Definition of done for v1
 
 - `POST /upload-orders` works end to end with the generated 10,000-row file: file visible in the GCS bucket, rows visible in all 3 shard databases, summary response correct.
 - Uploading the same file a second time reports ~0 inserted and the rest as duplicates.
 - Invalid rows are skipped and reported, and do not stop the upload.
-- `GET /orders/:orderId`, `GET /orders?customerId=`, and `GET /health` work.
+- `GET /orders?sellerId=`, `GET /orders/:orderId`, `GET /sellers/:sellerId/summary`, and `GET /health` work. The seller summary is answered by one shard only (visible in the logs).
 - `npm test` passes.
 - No credentials anywhere in the repo or its git history.
 - README contains: setup and run instructions, how ADC is configured, the sharding explanation, and design decisions and trade-offs.
@@ -266,6 +322,7 @@ Status of the items that were open at the start (updated Saturday 3 October 2026
 - **GCP project ID: RESOLVED**, `silver-osprey-460010-d8` (Google Cloud free trial is active). **GCS bucket name: PENDING**, created in Ticket 0, region `asia-south1`. The code does not need either until Ticket 7.
 - **Project folder and file layout: RESOLVED.** The repo root is the project root, so every path below sits directly inside `backend-test` (no extra `backend` subfolder).
 - **Development machine: RESOLVED.** Windows, VS Code, PowerShell terminal. See Section 17 for what that means for commands.
+- **Use case and shard key: RESOLVED (3 October 2026).** Marketplace seller order analytics, sharded on `seller_id` (Sections 2 and 11).
 
 Layout:
 ```
@@ -276,14 +333,15 @@ src/
   logger.js            pino instance
   routes/
     upload.js          POST /upload-orders
-    orders.js          GET /orders/:orderId, GET /orders
+    orders.js          GET /orders/:orderId, GET /orders?sellerId=
+    sellers.js         GET /sellers/:sellerId/summary
     health.js          GET /health
   services/
     gcs.js             uploadFileToGcs(localPath, destination)
     ingest.js          the streaming pipeline in Section 10
   db/
     shards.js          pools + getShardIndex (Section 11)
-    ordersRepo.js      insertBatch, findById, findByCustomer
+    ordersRepo.js      insertBatch, findOrder, findBySeller, sellerSummary
   validation/
     orderRow.js        validateOrderRow (Section 8)
 sql/
@@ -307,15 +365,15 @@ Any new ambiguity discovered during implementation is added here rather than sil
 
 This is the source of truth for what comes next. Each ticket is roughly one Coder message in chat, followed by a Reviewer pass. The Tester runs after Tickets 4, 6, and 8. Update the status line of each ticket as work proceeds.
 
-0. **Environment setup (Aysha, manual, no code).** Google Cloud account, project, bucket, gcloud CLI, `gcloud auth application-default login`. PostgreSQL installed with 3 empty databases. GitHub repo created. **Status: partly done.** Done: Google Cloud free-trial account and project `silver-osprey-460010-d8`; project folder with `.gitignore`, `.env` and `.env.example`; GitHub repo `backend-test` created (public, empty). Not done yet: PostgreSQL install with the 3 databases (needed before Ticket 2), GCS bucket and gcloud CLI with ADC login (needed before Ticket 7).
-1. **Skeleton.** `package.json`, `src/config.js`, `src/logger.js`, `src/app.js`, `src/server.js`, and `GET /health` returning `{ "status": "ok" }` for now. `.gitignore`, `.env` and `.env.example` already exist (done in Ticket 0) and must not be modified. `config.js` must require only `PORT`, `LOG_LEVEL` and `BATCH_SIZE` (with defaults) and must not crash if `GCP_PROJECT_ID`, `GCS_BUCKET_NAME` or `SHARD_URLS` are missing, because later tickets add and validate them (Section 6a). **Status: not started (next up).**
-2. **Shard layer + migration.** `db/shards.js` (pools, `getShardIndex`), `sql/001_create_orders.sql`, `scripts/migrate.js`. `GET /health` now checks every shard. **Status: not started.**
-3. **Sample data generator.** `scripts/generate-orders.js`: 10,000 rows, around 500 distinct customers, about 2% invalid rows of different kinds, a few duplicate `order_id`s. **Status: not started.**
+0. **Environment setup (Aysha, manual, no code).** Google Cloud account, project, bucket, gcloud CLI, `gcloud auth application-default login`. PostgreSQL installed with 3 empty databases. GitHub repo created. **Status: partly done.** Done: Google Cloud free-trial account and project `silver-osprey-460010-d8`; project folder with `.gitignore`, `.env` and `.env.example`; GitHub repo `backend-test` created and in use (public). In progress: PostgreSQL install with the 3 databases (needed before Ticket 2). Not done yet: GCS bucket and gcloud CLI with ADC login (needed before Ticket 7).
+1. **Skeleton.** `package.json`, `src/config.js`, `src/logger.js`, `src/app.js`, `src/server.js`, and `GET /health` returning `{ "status": "ok" }` for now. `.gitignore`, `.env` and `.env.example` already exist (done in Ticket 0) and must not be modified. `config.js` must require only `PORT`, `LOG_LEVEL` and `BATCH_SIZE` (with defaults) and must not crash if `GCP_PROJECT_ID`, `GCS_BUCKET_NAME` or `SHARD_URLS` are missing, because later tickets add and validate them (Section 6a). **Status: COMPLETE (committed and pushed to GitHub on 3 October 2026).**
+2. **Shard layer + migration.** `db/shards.js` (pools, `getShardIndex`), `sql/001_create_orders.sql` (the `orders` table exactly as in Section 8, including the composite primary key and `idx_orders_seller_date`), `scripts/migrate.js`. `GET /health` now checks every shard. **Status: not started.**
+3. **Sample data generator.** `scripts/generate-orders.js`: 10,000 rows for about 50 sellers of uneven size (a few large, most small, so the hot-seller trade-off shows in the per-shard counts), 4 marketplaces, several SKUs per seller, a mix of statuses including cancelled and returned, about 2% invalid rows of different kinds, and a few duplicate (seller, marketplace, order) rows. **Status: not started.**
 4. **Row validation + tests.** `validation/orderRow.js`, `test/orderRow.test.js`, `test/shards.test.js`. **Status: not started.**
 5. **Batch insert repository.** `ordersRepo.insertBatch(shardIndex, rows, sourceFile)` with transaction, `ON CONFLICT`, one retry. **Status: not started.**
 6. **Upload pipeline.** `routes/upload.js` + `services/ingest.js`: multer disk storage, streaming parse, validate, route, buffer, flush, summary response. GCS call stubbed for this ticket. **Highest-risk ticket. Keep it isolated.** **Status: not started.**
 7. **GCS upload with ADC.** `services/gcs.js`, wired into the pipeline as step 2. **Status: not started.**
-8. **Read endpoints.** `GET /orders/:orderId` (scatter-gather) and `GET /orders?customerId=` (single shard). **Status: not started.**
+8. **Read endpoints.** `GET /orders?sellerId=` (single shard), `GET /sellers/:sellerId/summary` (single shard: top products and sales by marketplace), and `GET /orders/:orderId` (single shard with `sellerId`, scatter-gather without). The summary route logs which shard answered. Note for the Coder: `pg` returns `numeric` columns as strings, so convert sums to numbers in the response. **Status: not started.**
 9. **README + final cleanup.** All README sections from Section 12, secrets check of the repo and git history. **Status: not started.**
 10. **Optional bonus: Docker Compose.** Only if Tickets 0 to 9 are complete, working, and understood. **Status: not started.**
 11. **Demo video + submission (Aysha, manual).** **Status: not started.**
@@ -329,7 +387,7 @@ Empty at project start. Reviewer and Tester findings that are not fixed immediat
 ## 16. Submission checklist
 
 - GitHub repo is accessible to reviewers and contains source, README, `sql/`, `.env.example`.
-- Demo video covers: the problem in one sentence, a live upload in Postman, the file in the GCS bucket, row counts in each of the 3 shard databases, a second upload showing duplicates are ignored, the two GET endpoints, and a short walk through `shards.js` and the batch insert.
+- Demo video covers: the problem in one sentence, a live upload in Postman, the file in the GCS bucket, row counts in each of the 3 shard databases, a second upload showing duplicates are ignored, the seller summary endpoint (answered by a single shard) and the order list endpoint, an explanation of the use case and why `seller_id` is the shard key, and a short walk through `shards.js` and the batch insert.
 - Google Drive folder named in the required `FirstName_Surname_Branch` format, shared as "Anyone with the link", containing the video.
 - Email sent with the GitHub link, the Drive folder link, and the video link. Every link opened in a private browser window first to confirm access.
 
