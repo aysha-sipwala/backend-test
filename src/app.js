@@ -5,6 +5,8 @@ const multer = require('multer');
 const logger = require('./logger');
 const { allPools } = require('./db/shards');
 const { uploadRouter, assignUploadId } = require('./routes/upload');
+const ordersRouter = require('./routes/orders');
+const sellersRouter = require('./routes/sellers');
 
 const app = express();
 
@@ -44,6 +46,12 @@ app.get('/health', async (req, res) => {
 
 // POST /upload-orders
 app.use(uploadRouter);
+
+// GET /orders, GET /orders/:orderId
+app.use(ordersRouter);
+
+// GET /sellers/:sellerId/summary
+app.use(sellersRouter);
 
 // Runs only when no route above matched the request.
 app.use((req, res) => {

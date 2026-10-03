@@ -1,6 +1,8 @@
-// Orders repository. For now it has one job: write a batch of already-validated
-// orders into one shard (Section 10, "Batch flush"). The caller decides which
-// shard (via getShardIndex) and how big the batch is.
+// Orders repository. It writes a batch of already-validated orders into one shard
+// (Section 10, "Batch flush") and reads orders back from one shard (Section 9).
+// Every function takes a shardIndex: the caller decides which shard (via
+// getShardIndex, or all of them for a scatter query) and, for inserts, how big
+// the batch is.
 const { getPool, getShardIndex } = require('./shards');
 const logger = require('../logger');
 
@@ -159,4 +161,141 @@ async function insertBatch(shardIndex, rows, sourceFile, batchLogger) {
   return { inserted, duplicates };
 }
 
-module.exports = { insertBatch };
+// ---------------------------------------------------------------------------
+// Reads (Ticket 8). Each function queries exactly the one shard it is given.
+// All values go in as $1, $2, ... parameters, never into the SQL text.
+// ---------------------------------------------------------------------------
+
+// The columns an order is returned with: all of them except created_at. This is
+// the same fixed list as the INSERT, so it holds no user input.
+const SELECT_COLUMNS = COLUMNS.join(', ');
+
+// Rounds a money amount to 2 decimals. pg returns numeric values as strings.
+function money(value) {
+  return Math.round(Number(value) * 100) / 100;
+}
+
+// One database row -> the object the API returns. pg gives order_date as a Date
+// and order_amount as a string, so both are converted here.
+function toOrder(row) {
+  return {
+    order_id: row.order_id,
+    seller_id: row.seller_id,
+    marketplace: row.marketplace,
+    sku: row.sku,
+    quantity: row.quantity,
+    customer_id: row.customer_id,
+    order_date: row.order_date.toISOString(),
+    order_amount: money(row.order_amount),
+    status: row.status,
+    source_file: row.source_file,
+  };
+}
+
+// findBySeller(shardIndex, sellerId, limit, offset) -> orders, newest first.
+// marketplace and order_id after order_date make the order total, so paging with
+// limit/offset never repeats or skips a row when two orders share a timestamp.
+async function findBySeller(shardIndex, sellerId, limit, offset) {
+  const result = await getPool(shardIndex).query(
+    `SELECT ${SELECT_COLUMNS} FROM orders
+     WHERE seller_id = $1
+     ORDER BY order_date DESC, marketplace, order_id
+     LIMIT $2 OFFSET $3`,
+    [sellerId, limit, offset]
+  );
+  return result.rows.map(toOrder);
+}
+
+// findOrder(shardIndex, orderId, sellerId?) -> every row with that order_id on
+// this shard. The same order number can exist for different sellers or
+// marketplaces, so there can be several. With sellerId the rows are narrowed to
+// that seller.
+async function findOrder(shardIndex, orderId, sellerId) {
+  const pool = getPool(shardIndex);
+  let result;
+  if (sellerId === undefined) {
+    result = await pool.query(
+      `SELECT ${SELECT_COLUMNS} FROM orders
+       WHERE order_id = $1
+       ORDER BY seller_id, marketplace`,
+      [orderId]
+    );
+  } else {
+    result = await pool.query(
+      `SELECT ${SELECT_COLUMNS} FROM orders
+       WHERE order_id = $1 AND seller_id = $2
+       ORDER BY seller_id, marketplace`,
+      [orderId, sellerId]
+    );
+  }
+  return result.rows.map(toOrder);
+}
+
+// sellerSummary(shardIndex, sellerId) -> the Section 9 summary, or null if the
+// seller has no rows at all on this shard. Cancelled and returned orders do not
+// count as sales. Everything is added up by PostgreSQL (SUM, COUNT, GROUP BY);
+// no rows are loaded into JavaScript.
+async function sellerSummary(shardIndex, sellerId) {
+  const pool = getPool(shardIndex);
+
+  // One pass over the seller's rows. FILTER makes a total count only real sales.
+  // rows_all counts every row, so "no rows" (404) can be told apart from "only
+  // cancelled or returned rows" (200 with zero totals).
+  const totals = await pool.query(
+    `SELECT
+       COUNT(*) AS rows_all,
+       COUNT(*) FILTER (WHERE status NOT IN ('cancelled', 'returned')) AS total_orders,
+       COALESCE(SUM(quantity) FILTER (WHERE status NOT IN ('cancelled', 'returned')), 0) AS total_units,
+       COALESCE(SUM(order_amount) FILTER (WHERE status NOT IN ('cancelled', 'returned')), 0) AS total_revenue
+     FROM orders
+     WHERE seller_id = $1`,
+    [sellerId]
+  );
+  const t = totals.rows[0];
+  if (Number(t.rows_all) === 0) {
+    return null;
+  }
+
+  // Top 5 products by units sold. Ties are broken by sku so the answer is stable.
+  const productsQuery = pool.query(
+    `SELECT sku, SUM(quantity) AS units, SUM(order_amount) AS revenue
+     FROM orders
+     WHERE seller_id = $1 AND status NOT IN ('cancelled', 'returned')
+     GROUP BY sku
+     ORDER BY SUM(quantity) DESC, sku
+     LIMIT 5`,
+    [sellerId]
+  );
+
+  // Every marketplace with sales, best revenue first (marketplace breaks ties).
+  const marketplacesQuery = pool.query(
+    `SELECT marketplace, COUNT(*) AS orders, SUM(quantity) AS units, SUM(order_amount) AS revenue
+     FROM orders
+     WHERE seller_id = $1 AND status NOT IN ('cancelled', 'returned')
+     GROUP BY marketplace
+     ORDER BY SUM(order_amount) DESC, marketplace`,
+    [sellerId]
+  );
+
+  const [products, marketplaces] = await Promise.all([productsQuery, marketplacesQuery]);
+
+  // pg returns COUNT and SUM results as strings, so every number is converted.
+  return {
+    totalOrders: Number(t.total_orders),
+    totalUnits: Number(t.total_units),
+    totalRevenue: money(t.total_revenue),
+    topProducts: products.rows.map((row) => ({
+      sku: row.sku,
+      units: Number(row.units),
+      revenue: money(row.revenue),
+    })),
+    byMarketplace: marketplaces.rows.map((row) => ({
+      marketplace: row.marketplace,
+      orders: Number(row.orders),
+      units: Number(row.units),
+      revenue: money(row.revenue),
+    })),
+  };
+}
+
+module.exports = { insertBatch, findBySeller, findOrder, sellerSummary };
