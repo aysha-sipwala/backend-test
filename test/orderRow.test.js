@@ -205,6 +205,27 @@ describe('quantity', () => {
   test('1 is the smallest accepted quantity', () => {
     assert.equal(validateOrderRow(validRow({ quantity: '1' })).valid, true);
   });
+
+  test('2147483647 (the largest PostgreSQL integer) is accepted', () => {
+    const result = validateOrderRow(validRow({ quantity: '2147483647' }));
+    assert.equal(result.valid, true);
+    assert.equal(result.order.quantity, 2147483647);
+  });
+
+  test('2147483648 (one above the limit) is rejected as too large', () => {
+    assertInvalid({ quantity: '2147483648' }, REASONS.QUANTITY_TOO_LARGE);
+    assert.equal(REASONS.QUANTITY_TOO_LARGE, 'quantity too large');
+  });
+
+  test('a huge whole number is "too large", not "invalid"', () => {
+    assertInvalid({ quantity: '99999999999999999999' }, REASONS.QUANTITY_TOO_LARGE);
+    assertInvalid({ quantity: '9'.repeat(400) }, REASONS.QUANTITY_TOO_LARGE);
+  });
+
+  test('leading zeros do not change the limit', () => {
+    assert.equal(validateOrderRow(validRow({ quantity: '0002147483647' })).valid, true);
+    assertInvalid({ quantity: '0002147483648' }, REASONS.QUANTITY_TOO_LARGE);
+  });
 });
 
 describe('order_date', () => {
@@ -259,6 +280,31 @@ describe('order_amount', () => {
   test('a thousands separator such as "1,000" is rejected', () => {
     assertInvalid({ order_amount: '1,000' }, REASONS.INVALID_ORDER_AMOUNT);
   });
+
+  test('9999999999.99 (the largest numeric(12,2) value) is accepted', () => {
+    const result = validateOrderRow(validRow({ order_amount: '9999999999.99' }));
+    assert.equal(result.valid, true);
+    assert.equal(result.order.order_amount, 9999999999.99);
+  });
+
+  test('10000000000.00 (one cent above the limit) is rejected as too large', () => {
+    assertInvalid({ order_amount: '10000000000.00' }, REASONS.ORDER_AMOUNT_TOO_LARGE);
+    assert.equal(REASONS.ORDER_AMOUNT_TOO_LARGE, 'order_amount too large');
+  });
+
+  test('10000000000 (no decimals) and a huge amount are rejected as too large', () => {
+    assertInvalid({ order_amount: '10000000000' }, REASONS.ORDER_AMOUNT_TOO_LARGE);
+    assertInvalid({ order_amount: '9'.repeat(400) }, REASONS.ORDER_AMOUNT_TOO_LARGE);
+  });
+
+  test('the format rules still come first: 3 decimals on a huge amount is "invalid"', () => {
+    assertInvalid({ order_amount: '99999999999.999' }, REASONS.INVALID_ORDER_AMOUNT);
+  });
+
+  test('leading zeros do not change the limit', () => {
+    assert.equal(validateOrderRow(validRow({ order_amount: '00009999999999.99' })).valid, true);
+    assertInvalid({ order_amount: '00010000000000.00' }, REASONS.ORDER_AMOUNT_TOO_LARGE);
+  });
 });
 
 describe('status', () => {
@@ -279,6 +325,10 @@ describe('reporting', () => {
     assertInvalid({ seller_id: '', status: 'bogus' }, REASONS.MISSING_SELLER_ID);
     // quantity comes before order_amount.
     assertInvalid({ quantity: '0', order_amount: '-5' }, REASONS.INVALID_QUANTITY);
+    assertInvalid({ quantity: '2147483648', order_amount: '-5' }, REASONS.QUANTITY_TOO_LARGE);
+    assertInvalid({ quantity: '2147483648', order_amount: '10000000000' }, REASONS.QUANTITY_TOO_LARGE);
+    // order_amount comes before status.
+    assertInvalid({ order_amount: '10000000000', status: 'bogus' }, REASONS.ORDER_AMOUNT_TOO_LARGE);
   });
 
   test('a missing row (undefined or null) is invalid, not a crash', () => {

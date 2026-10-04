@@ -19,6 +19,27 @@ function readPositiveInt(name, defaultValue) {
   return value;
 }
 
+// One batch insert sends 10 values per row, and PostgreSQL accepts at most 65,535
+// parameters in one statement: 65,535 / 10 = 6,553 rows, rounded down to 6,500.
+// A bigger BATCH_SIZE would make every single batch fail.
+const MAX_BATCH_SIZE = 6500;
+
+// BATCH_SIZE: default 1000, otherwise a whole number from 1 to MAX_BATCH_SIZE.
+// The message names the variable and the limit, not the value that was typed.
+function readBatchSize() {
+  const raw = process.env.BATCH_SIZE;
+  if (raw === undefined || raw.trim() === '') {
+    return 1000;
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > MAX_BATCH_SIZE) {
+    throw new Error(
+      `BATCH_SIZE must be a whole number from 1 to ${MAX_BATCH_SIZE} (PostgreSQL allows at most 65535 parameters per statement)`
+    );
+  }
+  return value;
+}
+
 // Returns the trimmed value, or undefined when the variable is not set yet.
 function readOptional(name) {
   const raw = process.env[name];
@@ -56,7 +77,7 @@ function readShardUrls() {
 const config = {
   PORT: readPositiveInt('PORT', 3000),
   LOG_LEVEL: readOptional('LOG_LEVEL') || 'info',
-  BATCH_SIZE: readPositiveInt('BATCH_SIZE', 1000),
+  BATCH_SIZE: readBatchSize(),
 
   // Array of connection URLs. Its length is SHARD_COUNT (see db/shards.js).
   SHARD_URLS: readShardUrls(),

@@ -17,15 +17,25 @@ const REASONS = Object.freeze({
   UNKNOWN_MARKETPLACE: 'unknown marketplace',
   MISSING_QUANTITY: 'missing quantity',
   INVALID_QUANTITY: 'invalid quantity',
+  QUANTITY_TOO_LARGE: 'quantity too large',
   MISSING_ORDER_DATE: 'missing order_date',
   INVALID_ORDER_DATE: 'invalid order_date',
   MISSING_ORDER_AMOUNT: 'missing order_amount',
   INVALID_ORDER_AMOUNT: 'invalid order_amount',
+  ORDER_AMOUNT_TOO_LARGE: 'order_amount too large',
   MISSING_STATUS: 'missing status',
   UNKNOWN_STATUS: 'unknown status',
 });
 
 const MAX_TEXT_LENGTH = 64;
+
+// The biggest values the database columns can hold. A row above them would pass
+// every other rule and then make PostgreSQL reject the whole batch it is in.
+// quantity is an integer column (4 bytes): at most 2,147,483,647.
+const MAX_QUANTITY = 2147483647;
+// order_amount is numeric(12,2): 10 digits before the point and 2 after.
+const MAX_ORDER_AMOUNT = 9999999999.99;
+
 const MARKETPLACES = ['amazon', 'flipkart', 'meesho', 'myntra'];
 const STATUSES = ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled', 'returned'];
 
@@ -112,14 +122,21 @@ function validateOrderRow(row) {
     return invalid(REASONS.UNKNOWN_MARKETPLACE);
   }
 
-  // quantity: a whole number, at least 1.
+  // quantity: a whole number, at least 1 and at most MAX_QUANTITY.
   const quantityText = toText(input.quantity);
   if (quantityText === '') {
     return invalid(REASONS.MISSING_QUANTITY);
   }
-  const quantity = Number(quantityText);
-  if (!WHOLE_NUMBER.test(quantityText) || !Number.isSafeInteger(quantity) || quantity < 1) {
+  if (!WHOLE_NUMBER.test(quantityText)) {
     return invalid(REASONS.INVALID_QUANTITY);
+  }
+  const quantity = Number(quantityText);
+  if (quantity < 1) {
+    return invalid(REASONS.INVALID_QUANTITY);
+  }
+  // A very long string of digits turns into Infinity here, which is also "too large".
+  if (quantity > MAX_QUANTITY) {
+    return invalid(REASONS.QUANTITY_TOO_LARGE);
   }
 
   // order_date: must be a real ISO 8601 date.
@@ -132,13 +149,19 @@ function validateOrderRow(row) {
     return invalid(REASONS.INVALID_ORDER_DATE);
   }
 
-  // order_amount: a number, at least 0, at most 2 decimal places.
+  // order_amount: a number, at least 0, at most 2 decimal places, at most MAX_ORDER_AMOUNT.
   const amountText = toText(input.order_amount);
   if (amountText === '') {
     return invalid(REASONS.MISSING_ORDER_AMOUNT);
   }
   if (!MONEY.test(amountText)) {
     return invalid(REASONS.INVALID_ORDER_AMOUNT);
+  }
+  // With at most 2 decimals, 9999999999.99 is the last value below 10000000000.00,
+  // so comparing as numbers is exact enough here.
+  const orderAmount = Number(amountText);
+  if (orderAmount > MAX_ORDER_AMOUNT) {
+    return invalid(REASONS.ORDER_AMOUNT_TOO_LARGE);
   }
 
   // status: lowercased, one of the six allowed values.
@@ -161,7 +184,7 @@ function validateOrderRow(row) {
       quantity,
       customer_id: cleaned.customer_id,
       order_date: orderDate,
-      order_amount: Number(amountText),
+      order_amount: orderAmount,
       status,
     },
   };
